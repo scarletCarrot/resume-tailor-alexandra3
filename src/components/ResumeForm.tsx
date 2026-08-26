@@ -251,6 +251,54 @@ export default function ResumeForm() {
     setManualJds((prev) => ({ ...prev, [index]: value }));
   }
 
+  async function consumeSse(
+    body: ReadableStream<Uint8Array>,
+    onEvent: (event: ProgressEvent) => void,
+  ) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop() || "";
+
+      for (const chunk of chunks) {
+        const line = chunk
+          .split("\n")
+          .find((entry) => entry.startsWith("data: "));
+        if (!line) continue;
+        onEvent(JSON.parse(line.slice(6)) as ProgressEvent);
+      }
+    }
+  }
+
+  async function postTailorPhase(
+    body: Record<string, unknown>,
+    onEvent: (event: ProgressEvent) => void,
+  ) {
+    const response = await fetch("/api/tailor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => null);
+      throw new Error(data?.error || "Failed to start processing.");
+    }
+
+    await consumeSse(response.body, onEvent);
+  }
+
+  /**
+   * Two Vercel invocations per job so Generate gets a fresh 300s budget.
+   * Resume prompt/output is unchanged.
+   */
   async function runJobs(
     targets: Array<{ url: string; index: number; manualJd?: string }>,
     mode: "batch" | "retry",
@@ -284,65 +332,85 @@ export default function ResumeForm() {
     }
 
     try {
-      const response = await fetch("/api/tailor", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jobUrls: targets.map((t) => t.url),
-          indices: targets.map((t) => t.index),
-          manualJds: targets.map((t) => t.manualJd || ""),
+      const results = await Promise.all(
+        targets.map(async (target) => {
+          type PreparedPayload = Extract<
+            ProgressEvent,
+            { type: "job_prepared" }
+          >;
+          let prepared: PreparedPayload | null = null;
+          let fatal: string | null = null;
+          let prepareFailed = false;
+
+          await postTailorPhase(
+            {
+              phase: "prepare",
+              jobUrls: [target.url],
+              indices: [target.index],
+              manualJds: [target.manualJd || ""],
+            },
+            (event) => {
+              if (event.type === "step") {
+                patchJob(event.index, (job) =>
+                  markStepProgress(job, event.step, event.message),
+                );
+              } else if (event.type === "job_prepared") {
+                prepared = event;
+              } else if (event.type === "job_error") {
+                prepareFailed = true;
+                patchJob(event.index, (job) => markJobError(job, event));
+              } else if (event.type === "fatal") {
+                fatal = event.error;
+              }
+            },
+          );
+
+          if (fatal) throw new Error(fatal);
+          if (prepareFailed || !prepared) return { ok: false as const };
+
+          const preparedJob = prepared as PreparedPayload;
+          let generateOk = false;
+
+          await postTailorPhase(
+            {
+              phase: "generate",
+              jobUrls: [preparedJob.jobUrl],
+              indices: [preparedJob.index],
+              rawTexts: [preparedJob.rawText],
+              extracteds: [preparedJob.extracted],
+            },
+            (event) => {
+              if (event.type === "step") {
+                patchJob(event.index, (job) =>
+                  markStepProgress(job, event.step, event.message),
+                );
+              } else if (event.type === "job_done") {
+                generateOk = true;
+                patchJob(event.index, (job) => markJobDone(job, event));
+              } else if (event.type === "job_error") {
+                patchJob(event.index, (job) => markJobError(job, event));
+              } else if (event.type === "fatal") {
+                fatal = event.error;
+              }
+            },
+          );
+
+          if (fatal) throw new Error(fatal);
+          return { ok: generateOk };
         }),
-      });
+      );
 
-      if (!response.ok || !response.body) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.error || "Failed to start processing.");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split("\n\n");
-        buffer = chunks.pop() || "";
-
-        for (const chunk of chunks) {
-          const line = chunk
-            .split("\n")
-            .find((entry) => entry.startsWith("data: "));
-          if (!line) continue;
-
-          const event = JSON.parse(line.slice(6)) as ProgressEvent;
-
-          if (event.type === "step") {
-            patchJob(event.index, (job) =>
-              markStepProgress(job, event.step, event.message),
-            );
-          } else if (event.type === "job_done") {
-            patchJob(event.index, (job) => markJobDone(job, event));
-          } else if (event.type === "job_error") {
-            patchJob(event.index, (job) => markJobError(job, event));
-          } else if (event.type === "done") {
-            setStatus(
-              mode === "retry"
-                ? event.succeeded
-                  ? `Retry finished · job succeeded`
-                  : `Retry finished · job failed`
-                : `Finished · ${event.succeeded} succeeded${
-                    event.failed ? ` · ${event.failed} failed` : ""
-                  }`,
-            );
-          } else if (event.type === "fatal") {
-            setError(event.error);
-            setStatus(null);
-          }
-        }
-      }
+      const succeeded = results.filter((r) => r.ok).length;
+      const failed = results.length - succeeded;
+      setStatus(
+        mode === "retry"
+          ? succeeded
+            ? `Retry finished · job succeeded`
+            : `Retry finished · job failed`
+          : `Finished · ${succeeded} succeeded${
+              failed ? ` · ${failed} failed` : ""
+            }`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
       setStatus(null);

@@ -1,7 +1,8 @@
 import { ZodError } from "zod";
-import { processOneJob } from "@/lib/process-job";
+import { generateOneJob, prepareOneJob } from "@/lib/process-job";
 import { CANDIDATE_PROFILE } from "@/lib/profile";
 import { JOB_STEPS, type JobStep, type ProgressEvent } from "@/lib/progress";
+import type { ExtractedJD } from "@/lib/types";
 import { parseTailorRequest } from "@/lib/validate";
 
 export const runtime = "nodejs";
@@ -37,19 +38,70 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(encodeSse(event)));
       };
 
+      // Keep the SSE connection alive during long OpenRouter waits.
+      const heartbeat = setInterval(() => {
+        controller.enqueue(encoder.encode(": ping\n\n"));
+      }, 15000);
+
       try {
         const outcomes = await Promise.all(
           payload.jobUrls.map(async (jobUrl, i) => {
             const index = payload.indices?.[i] ?? i + 1;
-            let currentStep: JobStep = JOB_STEPS[0];
+            let currentStep: JobStep =
+              payload.phase === "generate" ? "generating" : JOB_STEPS[0];
 
             try {
-              const result = await processOneJob({
+              if (payload.phase === "prepare") {
+                const prepared = await prepareOneJob({
+                  jobUrl,
+                  manualJd: payload.manualJds?.[i],
+                  onStep: (step, message) => {
+                    currentStep = step;
+                    send({
+                      type: "step",
+                      index,
+                      jobUrl,
+                      step,
+                      message,
+                    });
+                  },
+                });
+
+                send({
+                  type: "job_prepared",
+                  index,
+                  jobUrl,
+                  rawText: prepared.rawText,
+                  extracted: prepared.extracted,
+                });
+
+                return { ok: true as const };
+              }
+
+              const rawText = payload.rawTexts![i];
+              const extracted = payload.extracteds![i] as ExtractedJD;
+
+              // Mark early steps done for UI when resuming at generate.
+              for (const step of ["scraping", "fetch_jd", "extracting"] as const) {
+                send({
+                  type: "step",
+                  index,
+                  jobUrl,
+                  step,
+                  message:
+                    step === "extracting"
+                      ? "Structured JD ready"
+                      : "Prepared",
+                });
+              }
+
+              const result = await generateOneJob({
                 index,
                 jobUrl,
                 profile,
                 personal: profile.personal,
-                manualJd: payload.manualJds?.[i],
+                rawText,
+                extracted,
                 onStep: (step, message) => {
                   currentStep = step;
                   send({
@@ -108,6 +160,7 @@ export async function POST(request: Request) {
           error: err instanceof Error ? err.message : "Unexpected error",
         });
       } finally {
+        clearInterval(heartbeat);
         controller.close();
       }
     },

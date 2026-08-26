@@ -7,15 +7,12 @@ import { validateAndFixResume } from "./validate-resume";
 import type { JobStep } from "./progress";
 import type { CandidateProfile, ExtractedJD, PersonalInfo } from "./types";
 
-export async function processOneJob(options: {
-  index: number;
-  jobUrl: string;
-  profile: CandidateProfile;
-  personal: PersonalInfo;
-  /** When provided, skip scrape and use this JD text */
-  manualJd?: string;
-  onStep: (step: JobStep, message: string) => void;
-}): Promise<{
+export type PreparedJob = {
+  rawText: string;
+  extracted: ExtractedJD;
+};
+
+export type PackagedJob = {
   index: number;
   jobUrl: string;
   company: string;
@@ -32,8 +29,15 @@ export async function processOneJob(options: {
   extracted: ExtractedJD;
   atsScore: number;
   atsSummary: string;
-}> {
-  const { index, jobUrl, profile, personal, manualJd, onStep } = options;
+};
+
+/** Scrape (or use pasted JD) + extract. Own serverless budget when run as phase 1. */
+export async function prepareOneJob(options: {
+  jobUrl: string;
+  manualJd?: string;
+  onStep: (step: JobStep, message: string) => void;
+}): Promise<PreparedJob> {
+  const { jobUrl, manualJd, onStep } = options;
 
   let rawText: string;
   let pageTitle: string;
@@ -61,19 +65,31 @@ export async function processOneJob(options: {
   onStep("extracting", "Extracting structured JD…");
   const extracted = await extractJobDescription(rawText, pageTitle, jobUrl);
 
+  return { rawText, extracted };
+}
+
+/**
+ * Generate resume/cover letter + validate + zip.
+ * Resume prompt/output unchanged; runs as its own Vercel invocation (fresh 300s).
+ */
+export async function generateOneJob(options: {
+  index: number;
+  jobUrl: string;
+  profile: CandidateProfile;
+  personal: PersonalInfo;
+  rawText: string;
+  extracted: ExtractedJD;
+  onStep: (step: JobStep, message: string) => void;
+}): Promise<PackagedJob> {
+  const { index, jobUrl, profile, personal, rawText, extracted, onStep } =
+    options;
+
   onStep("generating", "Generating resume & cover letter…");
-  let tailored = await generateTailoredPackage(profile, extracted, rawText);
+  const tailored = await generateTailoredPackage(profile, extracted, rawText);
 
   onStep("validating", "Validating resume format and content…");
-  let validation = validateAndFixResume(tailored, profile, extracted);
-
-  if (!validation.ok) {
-    onStep("validating", "Fixing validation issues and regenerating…");
-    tailored = await generateTailoredPackage(profile, extracted, rawText);
-    validation = validateAndFixResume(tailored, profile, extracted);
-  }
-
-  tailored = validation.package;
+  const validation = validateAndFixResume(tailored, profile, extracted);
+  const fixed = validation.package;
 
   if (!validation.ok) {
     const critical = validation.issues
@@ -86,7 +102,7 @@ export async function processOneJob(options: {
   }
 
   const fixedCount = validation.issues.filter((i) => i.level === "fixed").length;
-  const ats = scoreAtsMatch(tailored.resume, extracted, rawText);
+  const ats = scoreAtsMatch(fixed.resume, extracted, rawText);
   onStep(
     "zipping",
     `Validated${fixedCount ? ` (${fixedCount} fixes)` : ""} · ATS ${ats.score}/100 · packaging…`,
@@ -98,7 +114,7 @@ export async function processOneJob(options: {
     rawJd: rawText,
     extracted,
     personal,
-    tailored,
+    tailored: fixed,
   });
 
   return {
@@ -115,4 +131,30 @@ export async function processOneJob(options: {
     atsScore: ats.score,
     atsSummary: `ATS score ${ats.score}/100`,
   };
+}
+
+/** Full pipeline (local / single-shot). Prefer phased API on Vercel. */
+export async function processOneJob(options: {
+  index: number;
+  jobUrl: string;
+  profile: CandidateProfile;
+  personal: PersonalInfo;
+  manualJd?: string;
+  onStep: (step: JobStep, message: string) => void;
+}): Promise<PackagedJob> {
+  const prepared = await prepareOneJob({
+    jobUrl: options.jobUrl,
+    manualJd: options.manualJd,
+    onStep: options.onStep,
+  });
+
+  return generateOneJob({
+    index: options.index,
+    jobUrl: options.jobUrl,
+    profile: options.profile,
+    personal: options.personal,
+    rawText: prepared.rawText,
+    extracted: prepared.extracted,
+    onStep: options.onStep,
+  });
 }

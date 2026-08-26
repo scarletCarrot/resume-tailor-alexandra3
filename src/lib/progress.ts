@@ -27,6 +27,23 @@ export type ProgressEvent =
       message: string;
     }
   | {
+      /** Prepare phase finished; client should start generate phase with this payload. */
+      type: "job_prepared";
+      index: number;
+      jobUrl: string;
+      rawText: string;
+      extracted: {
+        company: string;
+        jobTitle: string;
+        summary: string;
+        type: string;
+        salaryExpectation: string;
+        workMode: string;
+        hardTechnicalSkills: string[];
+        softSkills: string[];
+      };
+    }
+  | {
       type: "job_done";
       index: number;
       jobUrl: string;
