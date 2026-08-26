@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   JOB_STEPS,
   JOB_STEP_LABELS,
@@ -10,6 +10,11 @@ import {
 
 type StepStatus = "pending" | "active" | "done" | "error";
 type InputMode = "urls" | "manual";
+type ActivityLogEntry = {
+  at: number;
+  level: "info" | "warn" | "error";
+  message: string;
+};
 
 type JobDownloads = {
   resumeDocxUrl: string;
@@ -34,6 +39,8 @@ type JobProgress = {
   jobTitle?: string;
   atsScore?: number;
   error?: string;
+  logs: ActivityLogEntry[];
+  runningSince?: number;
 };
 
 const DOCX_MIME =
@@ -87,7 +94,28 @@ function createJobProgress(index: number, jobUrl: string): JobProgress {
     currentStep: null,
     stepStatuses: initialStepStatuses(),
     stepMessage: "Queued",
+    logs: [],
   };
+}
+
+function appendJobLog(
+  job: JobProgress,
+  level: ActivityLogEntry["level"],
+  message: string,
+  at = Date.now(),
+): JobProgress {
+  return {
+    ...job,
+    logs: [...job.logs, { at, level, message }].slice(-40),
+  };
+}
+
+function formatLogTime(at: number) {
+  return new Date(at).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function markStepProgress(
@@ -111,6 +139,7 @@ function markStepProgress(
     currentStep: step,
     stepStatuses,
     stepMessage: message,
+    runningSince: job.runningSince ?? Date.now(),
     error: undefined,
   };
 }
@@ -224,6 +253,14 @@ export default function ResumeForm() {
   const [jobs, setJobs] = useState<JobProgress[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [manualJds, setManualJds] = useState<Record<number, string>>({});
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const hasRunning = jobs.some((job) => job.status === "running");
+    if (!hasRunning) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [jobs]);
 
   const linkCount = useMemo(
     () =>
@@ -299,6 +336,44 @@ export default function ResumeForm() {
    * Two Vercel invocations per job so Generate gets a fresh 300s budget.
    * Resume prompt/output is unchanged.
    */
+  function handleJobEvent(event: ProgressEvent) {
+    if (event.type === "step") {
+      patchJob(event.index, (job) => {
+        const next = markStepProgress(job, event.step, event.message);
+        return appendJobLog(next, "info", event.message, Date.now());
+      });
+      return;
+    }
+
+    if (event.type === "log") {
+      patchJob(event.index, (job) =>
+        appendJobLog(job, event.level, event.message, event.at),
+      );
+      return;
+    }
+
+    if (event.type === "job_prepared") {
+      patchJob(event.index, (job) =>
+        appendJobLog(
+          job,
+          "info",
+          `Prepare complete · ${event.extracted.company} · starting generate phase…`,
+          Date.now(),
+        ),
+      );
+      return;
+    }
+
+    if (event.type === "job_done") {
+      patchJob(event.index, (job) => markJobDone(job, event));
+      return;
+    }
+
+    if (event.type === "job_error") {
+      patchJob(event.index, (job) => markJobError(job, event));
+    }
+  }
+
   async function runJobs(
     targets: Array<{ url: string; index: number; manualJd?: string }>,
     mode: "batch" | "retry",
@@ -350,18 +425,14 @@ export default function ResumeForm() {
               manualJds: [target.manualJd || ""],
             },
             (event) => {
-              if (event.type === "step") {
-                patchJob(event.index, (job) =>
-                  markStepProgress(job, event.step, event.message),
-                );
-              } else if (event.type === "job_prepared") {
+              if (event.type === "job_prepared") {
                 prepared = event;
-              } else if (event.type === "job_error") {
-                prepareFailed = true;
-                patchJob(event.index, (job) => markJobError(job, event));
               } else if (event.type === "fatal") {
                 fatal = event.error;
+              } else if (event.type === "job_error") {
+                prepareFailed = true;
               }
+              handleJobEvent(event);
             },
           );
 
@@ -380,18 +451,12 @@ export default function ResumeForm() {
               extracteds: [preparedJob.extracted],
             },
             (event) => {
-              if (event.type === "step") {
-                patchJob(event.index, (job) =>
-                  markStepProgress(job, event.step, event.message),
-                );
-              } else if (event.type === "job_done") {
+              if (event.type === "job_done") {
                 generateOk = true;
-                patchJob(event.index, (job) => markJobDone(job, event));
-              } else if (event.type === "job_error") {
-                patchJob(event.index, (job) => markJobError(job, event));
               } else if (event.type === "fatal") {
                 fatal = event.error;
               }
+              handleJobEvent(event);
             },
           );
 
@@ -682,9 +747,41 @@ export default function ResumeForm() {
                   </ol>
 
                   {job.status === "running" && (
-                    <p className="job-live">{job.stepMessage}</p>
+                    <p className="job-live">
+                      {job.stepMessage}
+                      {job.runningSince ? (
+                        <span className="job-elapsed">
+                          {" "}
+                          · {Math.round((now - job.runningSince) / 1000)}s
+                        </span>
+                      ) : null}
+                    </p>
                   )}
                   {job.error && <p className="job-error">{job.error}</p>}
+
+                  {job.logs.length > 0 && (
+                    <details className="activity-log" open={job.status === "running"}>
+                      <summary>
+                        Activity log ({job.logs.length})
+                        {job.status === "running" ? " · live" : ""}
+                      </summary>
+                      <ol className="activity-log-list">
+                        {job.logs.map((entry, i) => (
+                          <li
+                            key={`${entry.at}-${i}`}
+                            className={`activity-log-entry level-${entry.level}`}
+                          >
+                            <span className="activity-log-time">
+                              {formatLogTime(entry.at)}
+                            </span>
+                            <span className="activity-log-message">
+                              {entry.message}
+                            </span>
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
 
                   {job.status === "done" &&
                     job.downloads &&

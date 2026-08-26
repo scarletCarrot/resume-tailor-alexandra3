@@ -1,6 +1,7 @@
 import { ZodError } from "zod";
 import { generateOneJob, prepareOneJob } from "@/lib/process-job";
 import { CANDIDATE_PROFILE } from "@/lib/profile";
+import { emitJobLog } from "@/lib/job-log";
 import { JOB_STEPS, type JobStep, type ProgressEvent } from "@/lib/progress";
 import type { ExtractedJD } from "@/lib/types";
 import { parseTailorRequest } from "@/lib/validate";
@@ -43,15 +44,25 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(": ping\n\n"));
       }, 15000);
 
+      emitJobLog(
+        send,
+        0,
+        payload.jobUrls[0] || "batch",
+        `Started ${payload.phase} phase for ${payload.jobUrls.length} job(s).`,
+      );
+
       try {
         const outcomes = await Promise.all(
           payload.jobUrls.map(async (jobUrl, i) => {
             const index = payload.indices?.[i] ?? i + 1;
             let currentStep: JobStep =
               payload.phase === "generate" ? "generating" : JOB_STEPS[0];
+            const log = (message: string, level?: "info" | "warn" | "error") =>
+              emitJobLog(send, index, jobUrl, message, level);
 
             try {
               if (payload.phase === "prepare") {
+                log("Prepare phase: scrape + extract.");
                 const prepared = await prepareOneJob({
                   jobUrl,
                   manualJd: payload.manualJds?.[i],
@@ -64,8 +75,13 @@ export async function POST(request: Request) {
                       step,
                       message,
                     });
+                    log(message);
                   },
                 });
+
+                log(
+                  `Prepare complete · ${prepared.rawText.length.toLocaleString()} chars · ${prepared.extracted.company}.`,
+                );
 
                 send({
                   type: "job_prepared",
@@ -80,6 +96,10 @@ export async function POST(request: Request) {
 
               const rawText = payload.rawTexts![i];
               const extracted = payload.extracteds![i] as ExtractedJD;
+
+              log(
+                `Generate phase started for ${extracted.company} (${extracted.jobTitle}).`,
+              );
 
               // Mark early steps done for UI when resuming at generate.
               for (const step of ["scraping", "fetch_jd", "extracting"] as const) {
@@ -112,7 +132,10 @@ export async function POST(request: Request) {
                     message,
                   });
                 },
+                onLog: log,
               });
+
+              log(`Job complete · ${result.zipName}.`);
 
               send({
                 type: "job_done",
@@ -136,6 +159,7 @@ export async function POST(request: Request) {
                 err instanceof Error
                   ? err.message
                   : "Unknown error for this job.";
+              emitJobLog(send, index, jobUrl, message, "error");
               send({
                 type: "job_error",
                 index,

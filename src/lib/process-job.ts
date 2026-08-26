@@ -4,6 +4,8 @@ import { generateTailoredPackage } from "./generate";
 import { saveJobPackage } from "./package";
 import { scrapeJobDescription } from "./scrape";
 import { validateAndFixResume } from "./validate-resume";
+import type { JobLogLevel } from "./job-log";
+import { elapsedSec } from "./job-log";
 import type { JobStep } from "./progress";
 import type { CandidateProfile, ExtractedJD, PersonalInfo } from "./types";
 
@@ -80,14 +82,35 @@ export async function generateOneJob(options: {
   rawText: string;
   extracted: ExtractedJD;
   onStep: (step: JobStep, message: string) => void;
+  onLog?: (message: string, level?: JobLogLevel) => void;
 }): Promise<PackagedJob> {
-  const { index, jobUrl, profile, personal, rawText, extracted, onStep } =
+  const { index, jobUrl, profile, personal, rawText, extracted, onStep, onLog } =
     options;
 
   onStep("generating", "Generating resume & cover letter…");
-  const tailored = await generateTailoredPackage(profile, extracted, rawText);
+  onLog?.("Generate phase started (fresh 300s budget).");
+
+  const generateStarted = Date.now();
+  const ticker = setInterval(() => {
+    onLog?.(`Still waiting on OpenRouter… ${elapsedSec(generateStarted)}s elapsed`);
+  }, 15000);
+
+  let tailored;
+  try {
+    tailored = await generateTailoredPackage(
+      profile,
+      extracted,
+      rawText,
+      onLog,
+    );
+  } finally {
+    clearInterval(ticker);
+  }
+
+  onLog?.(`Resume generation finished in ${elapsedSec(generateStarted)}s.`);
 
   onStep("validating", "Validating resume format and content…");
+  onLog?.("Validating resume format and content…");
   const validation = validateAndFixResume(tailored, profile, extracted);
   const fixed = validation.package;
 
@@ -107,6 +130,7 @@ export async function generateOneJob(options: {
     "zipping",
     `Validated${fixedCount ? ` (${fixedCount} fixes)` : ""} · ATS ${ats.score}/100 · packaging…`,
   );
+  onLog?.(`Packaging files · ATS ${ats.score}/100…`);
 
   const saved = await saveJobPackage({
     index,

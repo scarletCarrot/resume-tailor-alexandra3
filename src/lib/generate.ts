@@ -6,6 +6,7 @@ import type {
   TailoredResume,
 } from "./types";
 import { tailorExperienceTitle } from "./job-title";
+import type { JobLogLevel } from "./job-log";
 import { getLlmClient, getLlmModel } from "./llm";
 import { parseModelJson } from "./parse-json";
 import {
@@ -53,6 +54,7 @@ export async function generateTailoredPackage(
   profile: CandidateProfile,
   extracted: ExtractedJD,
   rawJd: string,
+  onLog?: (message: string, level?: JobLogLevel) => void,
 ): Promise<TailoredPackage> {
   const client = getLlmClient();
   const model = getLlmModel();
@@ -62,15 +64,18 @@ export async function generateTailoredPackage(
     rawJobDescription: rawJd.slice(0, 12000),
   });
 
+  onLog?.(`Calling OpenRouter (${model})…`);
   let content = await requestJson(client, model, [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: userPayload },
-  ]);
+  ], onLog);
 
   let parsed: TailoredPackage;
   try {
     parsed = parseModelJson<TailoredPackage>(content);
+    onLog?.("Parsed resume JSON successfully.");
   } catch (firstError) {
+    onLog?.("Invalid JSON from model — requesting repair…", "warn");
     content = await requestJson(client, model, [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userPayload },
@@ -80,10 +85,12 @@ export async function generateTailoredPackage(
         content:
           "Your previous reply was invalid JSON. Return ONLY repaired valid JSON for the same request. No markdown, no commentary.",
       },
-    ]);
+    ], onLog, "repair");
     try {
       parsed = parseModelJson<TailoredPackage>(content);
+      onLog?.("Repaired JSON parsed successfully.");
     } catch {
+      onLog?.("JSON repair failed.", "error");
       throw firstError instanceof Error
         ? firstError
         : new Error("Failed to parse generated resume JSON.");
@@ -113,18 +120,37 @@ async function requestJson(
   client: ReturnType<typeof getLlmClient>,
   model: string,
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+  onLog?: (message: string, level?: JobLogLevel) => void,
+  label = "generate",
 ): Promise<string> {
-  const completion = await client.chat.completions.create({
-    model,
-    temperature: 0.3,
-    response_format: { type: "json_object" },
-    messages,
-  });
+  const started = Date.now();
+  onLog?.(`OpenRouter ${label} request started…`);
 
+  let completion;
+  try {
+    completion = await client.chat.completions.create({
+      model,
+      temperature: 0.3,
+      response_format: { type: "json_object" },
+      messages,
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "OpenRouter request failed.";
+    onLog?.(`OpenRouter ${label} failed after ${Math.round((Date.now() - started) / 1000)}s: ${message}`, "error");
+    throw err instanceof Error ? err : new Error(message);
+  }
+
+  const durationSec = Math.round((Date.now() - started) / 1000);
   const content = completion.choices[0]?.message?.content;
   if (!content?.trim()) {
+    onLog?.(`OpenRouter ${label} returned empty response after ${durationSec}s.`, "error");
     throw new Error("Empty response while generating tailored resume.");
   }
+
+  onLog?.(
+    `OpenRouter ${label} finished in ${durationSec}s (${content.length.toLocaleString()} chars).`,
+  );
   return content;
 }
 

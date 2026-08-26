@@ -27,6 +27,14 @@ export type ProgressEvent =
       message: string;
     }
   | {
+      type: "log";
+      index: number;
+      jobUrl: string;
+      level: "info" | "warn" | "error";
+      message: string;
+      at: number;
+    }
+  | {
       /** Prepare phase finished; client should start generate phase with this payload. */
       type: "job_prepared";
       index: number;
