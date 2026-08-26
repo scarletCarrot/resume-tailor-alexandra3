@@ -1,10 +1,29 @@
 import OpenAI from "openai";
+import type {
+  ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionMessageParam,
+} from "openai/resources/chat/completions";
 
 const DEFAULT_MODEL = "deepseek/deepseek-v4-flash";
 const DEFAULT_TIMEOUT_MS = 180_000;
 
+/** Strip OpenRouter routing suffixes so we don't double-append. */
+function stripRoutingSuffix(model: string) {
+  return model.replace(/:(nitro|floor)$/i, "");
+}
+
+export function getLlmModelBase() {
+  return stripRoutingSuffix(process.env.OPENROUTER_MODEL || DEFAULT_MODEL);
+}
+
+/**
+ * Same base model with OpenRouter :nitro routing (fastest throughput provider).
+ * Disable via OPENROUTER_NITRO=false.
+ */
 export function getLlmModel() {
-  return process.env.OPENROUTER_MODEL || DEFAULT_MODEL;
+  const base = getLlmModelBase();
+  const useNitro = process.env.OPENROUTER_NITRO !== "false";
+  return useNitro ? `${base}:nitro` : base;
 }
 
 /** Per-request OpenRouter timeout (default 180s per call; same model for resume + cover letter). */
@@ -41,4 +60,30 @@ export function isAbortError(err: unknown) {
       err.message.includes("aborted") ||
       err.message.includes("timeout"))
   );
+}
+
+type OpenRouterCompletionBody = ChatCompletionCreateParamsNonStreaming & {
+  provider?: { sort: "throughput" | "latency" | "price" };
+};
+
+/** OpenRouter chat completion with :nitro / throughput routing. */
+export async function createOpenRouterCompletion(
+  client: OpenAI,
+  params: {
+    messages: ChatCompletionMessageParam[];
+    temperature?: number;
+    response_format?: ChatCompletionCreateParamsNonStreaming["response_format"];
+    model?: string;
+  },
+  options?: { signal?: AbortSignal },
+) {
+  const body: OpenRouterCompletionBody = {
+    model: params.model ?? getLlmModel(),
+    messages: params.messages,
+    temperature: params.temperature,
+    response_format: params.response_format,
+    provider: { sort: "throughput" },
+  };
+
+  return client.chat.completions.create(body, options);
 }

@@ -7,7 +7,7 @@ import type {
 } from "./types";
 import { tailorExperienceTitle } from "./job-title";
 import type { JobLogLevel } from "./job-log";
-import { getLlmClient, getLlmModel, getLlmTimeoutMs, isAbortError } from "./llm";
+import { getLlmClient, getLlmModel, getLlmTimeoutMs, isAbortError, createOpenRouterCompletion } from "./llm";
 import { parseModelJson } from "./parse-json";
 import {
   buildFallbackSummary,
@@ -261,7 +261,8 @@ async function requestJson(
 
   let completion;
   try {
-    completion = await client.chat.completions.create(
+    completion = await createOpenRouterCompletion(
+      client,
       {
         model,
         temperature: 0.3,

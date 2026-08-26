@@ -1,5 +1,5 @@
 import type { ExtractedJD, JobType, WorkMode } from "./types";
-import { getLlmClient, getLlmModel } from "./llm";
+import { getLlmClient, createOpenRouterCompletion } from "./llm";
 import { parseModelJson } from "./parse-json";
 
 const JOB_TYPES: JobType[] = [
@@ -42,8 +42,7 @@ export async function extractJobDescription(
 ): Promise<ExtractedJD> {
   const client = getLlmClient();
 
-  const completion = await client.chat.completions.create({
-    model: getLlmModel(),
+  const completion = await createOpenRouterCompletion(client, {
     temperature: 0.2,
     response_format: { type: "json_object" },
     messages: [
