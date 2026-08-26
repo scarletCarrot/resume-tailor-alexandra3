@@ -102,6 +102,7 @@ export async function generateOneJob(options: {
       extracted,
       rawText,
       onLog,
+      (message) => onStep("generating", message),
     );
   } finally {
     clearInterval(ticker);
