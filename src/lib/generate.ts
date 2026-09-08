@@ -16,26 +16,43 @@ import {
   sanitizePlainText,
 } from "./validate-resume";
 
-const SHARED_RULES = `Hard rules:
-1. Resume sections: Summary, Skills, Experience, Education.
-2. Skills MUST be classified into compact groups (not one skill per line). Use 4-6 groups such as:
-   Languages, Frameworks/Libraries, Cloud/DevOps, Data/AI, Databases, Tools/Practices.
-   Each group has a short category name and 4-10 comma-ready item strings.
-3. Each experience MUST include:
-   - overview: 1-2 sentences (about 25-45 words) describing what the company does and the candidate's core responsibility in that role, tailored toward the target JD.
-   - exactly 7 bullet points of accomplishments.
-4. Each bullet must be professional and specific (~25-40 words). Describe concrete work done.
-5. Use concrete absolute measures where appropriate (counts, scale, volume, latency, users, datasets, or dollars). NEVER use percentages, percentage points, or the % symbol anywhere in the resume or cover letter.
-6. Include slightly MORE relevant experience breadth than the JD strictly requires.
-7. Mirror JD terminology and hard skills heavily for ATS scoring.
-8. keywords: array of important JD keywords/phrases that should be bolded.
-9. Keep the candidate's company names, periods, locations, and education exactly as given. Align every experience title to the extracted JD type. Use only Software Engineer, Data Engineer, Data Analyst, Data Scientist, or AI Engineer as the title family. The candidate's most recent senior role must use "Lead" when the JD title is a Lead role; otherwise use "Senior".
-10. Do not invent employers or schools. Invent realistic overviews and accomplishment bullets grounded in the companies and JD.
-11. Return ONLY valid compact JSON. Escape all double quotes inside strings. Do not wrap in markdown.
-12. NEVER use markdown in any string (**bold**, *italic*, backticks, headings). Plain text only. Keyword bolding is applied later by the document formatter.`;
+const SHARED_RULES = `Hard constraints:
+1. Return ONLY valid compact JSON. No questions, explanations, commentary, chain-of-thought, or markdown wrappers.
+2. NEVER use markdown in any string (**bold**, *italic*, backticks, headings). Plain text only. Keyword bolding is applied later by the document formatter.
+3. Do not change the candidate's name, contact info, company names, periods, locations, or education. Escape all double quotes inside strings.
+4. Only rewrite summary, skills, and experience content (overviews + bullets). Keep every experience historically and technically believable.
+5. Align every experience title to the extracted JD type. Use only Software Engineer, Data Engineer, Data Analyst, Data Scientist, or AI Engineer as the title family. The candidate's most recent senior role must use "Lead" when the JD title is a Lead role; otherwise use "Senior".
+6. Do not invent employers or schools. Ground all content in the given companies and the target JD.
 
-const RESUME_SYSTEM_PROMPT = `You are an expert ATS resume writer.
-Create a tailored resume that maximizes ATS keyword match for the target role.
+Content quality:
+7. Produce a highly matched, ATS-optimized, human-convincing, realistic, professionally written resume. Sound human — not generic AI.
+8. Emphasize must-have JD skills, preferred skills, seniority signals, domain requirements, ATS keywords, and ownership/business impact. Mirror JD terminology naturally; avoid keyword stuffing and repetitive bullets.
+9. Make the most recent roles match the JD most strongly. Keep the full resume cohesive and credible from top to bottom.
+10. Skills MUST use more than 4 categories (5–7 groups such as Languages, Frameworks/Libraries, Cloud/DevOps, Data/AI, Databases, Tools/Practices, Testing/Quality). Each category must contain more than 5 skills (6–10 comma-ready item strings).
+11. Each experience MUST include:
+   - overview: 1–2 sentences (about 25–45 words) on what the company does and the candidate's core responsibility, tailored to the JD.
+   - exactly 7 accomplishment bullets (8 allowed only if needed for stronger JD fit on the most recent role).
+12. Each bullet must:
+   - be 20–30 words
+   - be a complete sentence
+   - start with a strong action verb
+   - reference a specific engineering task or system change
+   - include at least one technology or platform
+   - reflect realistic software engineering work
+13. Use realistic absolute metrics in only about 30%–40% of bullets (counts, scale, volume, latency, users, datasets, or dollars). Prefer non-percentage metrics. NEVER use percentages, percentage points, or the % symbol anywhere in the resume or cover letter.
+14. Include slightly more relevant experience breadth than the JD strictly requires, without inventing impossible seniority or stack depth.
+15. keywords: array of ~15–20 high-value JD/tech phrases to bold later. Prefer distinctive hard skills and role terms; do not exceed ~20 items.`;
+
+const RESUME_SYSTEM_PROMPT = `You are a top-tier technical resume writer specializing in software engineering resumes.
+Tailor the candidate's base resume to the provided job description. Maximize ATS match while remaining realistic, specific, and human-written.
+
+Process (internal — do not narrate; output JSON only):
+1. Detect the main role domain from the JD: Backend, Frontend, Full Stack, AI, Data Science, ML, LLM, Mobile, or Hybrid (map to the closest supported title family).
+2. Extract must-have skills, preferred skills, seniority, domain requirements, ATS keywords, and business/ownership signals.
+3. Reposition the candidate's existing background to align with the role without rewriting employment history facts.
+4. Rewrite summary, skills, and experience for maximum fit; weight the latest roles most heavily toward the JD.
+5. Emphasize the most relevant technologies, systems, and impact in recent roles; keep older roles credible and consistent.
+6. Perform a final quality pass for cohesion, realism, varied verbs, and ATS keyword coverage without stuffing.
 
 ${SHARED_RULES}
 
