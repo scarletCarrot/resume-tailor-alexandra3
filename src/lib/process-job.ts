@@ -1,4 +1,8 @@
 import { scoreAtsMatch } from "./ats-score";
+import {
+  checkDuplicateCompany,
+  recordCompany,
+} from "./company-dedupe";
 import { extractJobDescription } from "./extract";
 import { generateTailoredPackage } from "./generate";
 import { saveJobPackage } from "./package";
@@ -70,9 +74,18 @@ export async function prepareOneJob(options: {
   return { rawText, extracted };
 }
 
+export type GenerateOutcome =
+  | { kind: "generated"; job: PackagedJob }
+  | {
+      kind: "duplicate";
+      company: string;
+      message: string;
+    };
+
 /**
  * Generate resume/cover letter + validate + zip.
  * Resume prompt/output unchanged; runs as its own Vercel invocation (fresh 300s).
+ * Checks company-level dedupe first; records the company only after success.
  */
 export async function generateOneJob(options: {
   index: number;
@@ -83,9 +96,20 @@ export async function generateOneJob(options: {
   extracted: ExtractedJD;
   onStep: (step: JobStep, message: string) => void;
   onLog?: (message: string, level?: JobLogLevel) => void;
-}): Promise<PackagedJob> {
+}): Promise<GenerateOutcome> {
   const { index, jobUrl, profile, personal, rawText, extracted, onStep, onLog } =
     options;
+
+  const duplicate = await checkDuplicateCompany(extracted.company);
+  if (duplicate) {
+    const message = `A resume was already tailored for ${extracted.company} within the last 14 days. Generation skipped.`;
+    onLog?.(message, "warn");
+    return {
+      kind: "duplicate",
+      company: extracted.company,
+      message,
+    };
+  }
 
   onStep("generating", "Generating resume & cover letter…");
   onLog?.("Generate phase started (fresh 300s budget).");
@@ -142,19 +166,24 @@ export async function generateOneJob(options: {
     tailored: fixed,
   });
 
+  await recordCompany(extracted.company);
+
   return {
-    index,
-    jobUrl,
-    company: saved.company,
-    zipName: saved.zipName,
-    folderName: saved.folderName,
-    resumeDocxName: saved.resumeDocxName,
-    resumePdfName: saved.resumePdfName,
-    coverLetterDocxName: saved.coverLetterDocxName,
-    downloads: saved.downloads,
-    extracted,
-    atsScore: ats.score,
-    atsSummary: `ATS score ${ats.score}/100`,
+    kind: "generated",
+    job: {
+      index,
+      jobUrl,
+      company: saved.company,
+      zipName: saved.zipName,
+      folderName: saved.folderName,
+      resumeDocxName: saved.resumeDocxName,
+      resumePdfName: saved.resumePdfName,
+      coverLetterDocxName: saved.coverLetterDocxName,
+      downloads: saved.downloads,
+      extracted,
+      atsScore: ats.score,
+      atsSummary: `ATS score ${ats.score}/100`,
+    },
   };
 }
 
@@ -173,7 +202,7 @@ export async function processOneJob(options: {
     onStep: options.onStep,
   });
 
-  return generateOneJob({
+  const outcome = await generateOneJob({
     index: options.index,
     jobUrl: options.jobUrl,
     profile: options.profile,
@@ -182,4 +211,10 @@ export async function processOneJob(options: {
     extracted: prepared.extracted,
     onStep: options.onStep,
   });
+
+  if (outcome.kind === "duplicate") {
+    throw new Error(outcome.message);
+  }
+
+  return outcome.job;
 }

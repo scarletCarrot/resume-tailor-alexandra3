@@ -88,9 +88,19 @@ export type ProgressEvent =
       error: string;
     }
   | {
+      /** Company was already tailored within the retention window; generation skipped. */
+      type: "job_duplicate";
+      index: number;
+      jobUrl: string;
+      company: string;
+      message: string;
+    }
+  | {
       type: "done";
       succeeded: number;
       failed: number;
+      /** Jobs skipped because the company was tailored recently. */
+      duplicates?: number;
     }
   | {
       type: "fatal";

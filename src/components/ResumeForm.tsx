@@ -25,7 +25,7 @@ type JobDownloads = {
 type JobProgress = {
   index: number;
   jobUrl: string;
-  status: "queued" | "running" | "done" | "error";
+  status: "queued" | "running" | "done" | "error" | "duplicate";
   currentStep: JobStep | null;
   stepStatuses: Record<JobStep, StepStatus>;
   stepMessage: string;
@@ -39,6 +39,7 @@ type JobProgress = {
   jobTitle?: string;
   atsScore?: number;
   error?: string;
+  duplicateMessage?: string;
   logs: ActivityLogEntry[];
   runningSince?: number;
 };
@@ -193,6 +194,28 @@ function markJobError(
   };
 }
 
+function markJobDuplicate(
+  job: JobProgress,
+  data: Extract<ProgressEvent, { type: "job_duplicate" }>,
+): JobProgress {
+  const stepStatuses = { ...job.stepStatuses };
+  // Prepare steps already finished; leave generate+ as pending (skipped).
+  for (const step of ["scraping", "fetch_jd", "extracting"] as const) {
+    stepStatuses[step] = "done";
+  }
+
+  return {
+    ...job,
+    status: "duplicate",
+    currentStep: null,
+    stepStatuses,
+    stepMessage: data.message,
+    company: data.company,
+    duplicateMessage: data.message,
+    error: undefined,
+  };
+}
+
 function hostFromUrl(url: string) {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -237,7 +260,9 @@ function StatusBadge({ status }: { status: JobProgress["status"] }) {
         ? "Running"
         : status === "done"
           ? "Done"
-          : "Failed";
+          : status === "duplicate"
+            ? "Duplicate"
+            : "Failed";
   return <span className={`badge badge-${status}`}>{label}</span>;
 }
 
@@ -275,7 +300,8 @@ export default function ResumeForm() {
     const done = jobs.filter((j) => j.status === "done").length;
     const failed = jobs.filter((j) => j.status === "error").length;
     const running = jobs.filter((j) => j.status === "running").length;
-    return { done, failed, running, total: jobs.length };
+    const duplicates = jobs.filter((j) => j.status === "duplicate").length;
+    return { done, failed, running, duplicates, total: jobs.length };
   }, [jobs]);
 
   function patchJob(index: number, updater: (job: JobProgress) => JobProgress) {
@@ -369,6 +395,13 @@ export default function ResumeForm() {
       return;
     }
 
+    if (event.type === "job_duplicate") {
+      patchJob(event.index, (job) =>
+        appendJobLog(markJobDuplicate(job, event), "warn", event.message),
+      );
+      return;
+    }
+
     if (event.type === "job_error") {
       patchJob(event.index, (job) => markJobError(job, event));
     }
@@ -441,6 +474,7 @@ export default function ResumeForm() {
 
           const preparedJob = prepared as PreparedPayload;
           let generateOk = false;
+          let wasDuplicate = false;
 
           await postTailorPhase(
             {
@@ -453,6 +487,8 @@ export default function ResumeForm() {
             (event) => {
               if (event.type === "job_done") {
                 generateOk = true;
+              } else if (event.type === "job_duplicate") {
+                wasDuplicate = true;
               } else if (event.type === "fatal") {
                 fatal = event.error;
               }
@@ -461,20 +497,27 @@ export default function ResumeForm() {
           );
 
           if (fatal) throw new Error(fatal);
+          if (wasDuplicate) return { ok: "duplicate" as const };
           return { ok: generateOk };
         }),
       );
 
-      const succeeded = results.filter((r) => r.ok).length;
-      const failed = results.length - succeeded;
+      const succeeded = results.filter((r) => r.ok === true).length;
+      const duplicates = results.filter((r) => r.ok === "duplicate").length;
+      const failed = results.length - succeeded - duplicates;
+      const duplicateNote = duplicates
+        ? ` · ${duplicates} duplicate${duplicates > 1 ? "s" : ""}`
+        : "";
       setStatus(
         mode === "retry"
           ? succeeded
             ? `Retry finished · job succeeded`
-            : `Retry finished · job failed`
+            : duplicates
+              ? `Retry finished · duplicate company (skipped)`
+              : `Retry finished · job failed`
           : `Finished · ${succeeded} succeeded${
               failed ? ` · ${failed} failed` : ""
-            }`,
+            }${duplicateNote}`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");
@@ -657,7 +700,11 @@ export default function ResumeForm() {
             <p className="hint">
               {jobs.length === 0
                 ? "Results appear here after you generate."
-                : `${summary.done} done · ${summary.running} running · ${summary.failed} failed`}
+                : `${summary.done} done · ${summary.running} running · ${summary.failed} failed${
+                    summary.duplicates
+                      ? ` · ${summary.duplicates} duplicate${summary.duplicates > 1 ? "s" : ""}`
+                      : ""
+                  }`}
             </p>
           </div>
           {completedDownloads.length > 0 && (
@@ -758,6 +805,11 @@ export default function ResumeForm() {
                     </p>
                   )}
                   {job.error && <p className="job-error">{job.error}</p>}
+                  {job.status === "duplicate" && job.duplicateMessage && (
+                    <p className="job-duplicate" role="alert">
+                      {job.duplicateMessage}
+                    </p>
+                  )}
 
                   {job.logs.length > 0 && (
                     <details className="activity-log" open={job.status === "running"}>

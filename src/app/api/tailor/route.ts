@@ -115,7 +115,7 @@ export async function POST(request: Request) {
                 });
               }
 
-              const result = await generateOneJob({
+              const outcome = await generateOneJob({
                 index,
                 jobUrl,
                 profile,
@@ -135,6 +135,19 @@ export async function POST(request: Request) {
                 onLog: log,
               });
 
+              if (outcome.kind === "duplicate") {
+                log(outcome.message, "warn");
+                send({
+                  type: "job_duplicate",
+                  index,
+                  jobUrl,
+                  company: outcome.company,
+                  message: outcome.message,
+                });
+                return { ok: "duplicate" as const };
+              }
+
+              const result = outcome.job;
               log(`Job complete · ${result.zipName}.`);
 
               send({
@@ -172,11 +185,14 @@ export async function POST(request: Request) {
           }),
         );
 
-        const succeeded = outcomes.filter((o) => o.ok).length;
+        const succeeded = outcomes.filter((o) => o.ok === true).length;
+        const duplicates = outcomes.filter((o) => o.ok === "duplicate").length;
+        const failed = outcomes.length - succeeded - duplicates;
         send({
           type: "done",
           succeeded,
-          failed: outcomes.length - succeeded,
+          failed,
+          duplicates,
         });
       } catch (err) {
         send({
