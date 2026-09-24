@@ -122,6 +122,7 @@ export async function POST(request: Request) {
                 personal: profile.personal,
                 rawText,
                 extracted,
+                forceAllowDuplicate: Boolean(payload.forceAllowDuplicate),
                 onStep: (step, message) => {
                   currentStep = step;
                   send({

@@ -29,6 +29,8 @@ export const tailorRequestSchema = z
     rawTexts: z.array(z.string().min(1)).optional(),
     /** Required for phase=generate: extracted JD per job */
     extracteds: z.array(extractedJdSchema).optional(),
+    /** Skip company duplicate check (user chose "Generate anyway"). */
+    forceAllowDuplicate: z.boolean().optional(),
   })
   .superRefine((value, ctx) => {
     if (value.indices && value.indices.length !== value.jobUrls.length) {

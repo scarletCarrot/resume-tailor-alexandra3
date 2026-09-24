@@ -614,6 +614,17 @@ button {
   word-break: break-word;
 }
 
+.duplicate-panel {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.duplicate-panel .retry-row {
+  padding-top: 0;
+  border-top: none;
+  justify-content: flex-start;
+}
+
 .download-row,
 .retry-row {
   display: flex;

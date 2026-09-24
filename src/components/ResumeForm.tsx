@@ -22,6 +22,11 @@ type JobDownloads = {
   zipUrl: string;
 };
 
+type JobPreparedPayload = {
+  rawText: string;
+  extracted: Extract<ProgressEvent, { type: "job_prepared" }>["extracted"];
+};
+
 type JobProgress = {
   index: number;
   jobUrl: string;
@@ -40,6 +45,8 @@ type JobProgress = {
   atsScore?: number;
   error?: string;
   duplicateMessage?: string;
+  /** Kept after prepare so "Generate anyway" can skip re-scrape. */
+  prepared?: JobPreparedPayload;
   logs: ActivityLogEntry[];
   runningSince?: number;
 };
@@ -381,7 +388,15 @@ export default function ResumeForm() {
     if (event.type === "job_prepared") {
       patchJob(event.index, (job) =>
         appendJobLog(
-          job,
+          {
+            ...job,
+            company: event.extracted.company,
+            jobTitle: event.extracted.jobTitle,
+            prepared: {
+              rawText: event.rawText,
+              extracted: event.extracted,
+            },
+          },
           "info",
           `Prepare complete · ${event.extracted.company} · starting generate phase…`,
           Date.now(),
@@ -588,6 +603,83 @@ export default function ResumeForm() {
       ],
       "retry",
     );
+  }
+
+  /**
+   * Skip duplicate check and generate using the already-prepared JD
+   * (no re-scrape / re-extract).
+   */
+  async function onGenerateAnyway(job: JobProgress) {
+    if (
+      retryingIndices[job.index] ||
+      job.status === "running" ||
+      !job.prepared
+    ) {
+      return;
+    }
+
+    setError(null);
+    setRetryingIndices((prev) => ({ ...prev, [job.index]: true }));
+    setStatus(`Generating anyway for ${job.company || `job ${job.index}`}…`);
+
+    const prepared = job.prepared;
+    patchJob(job.index, (j) => ({
+      ...j,
+      status: "running",
+      duplicateMessage: undefined,
+      error: undefined,
+      stepMessage: "Generating anyway (duplicate override)…",
+      runningSince: Date.now(),
+      stepStatuses: {
+        scraping: "done",
+        fetch_jd: "done",
+        extracting: "done",
+        generating: "pending",
+        validating: "pending",
+        zipping: "pending",
+      },
+      prepared,
+    }));
+
+    try {
+      let generateOk = false;
+      let fatal: string | null = null;
+
+      await postTailorPhase(
+        {
+          phase: "generate",
+          jobUrls: [job.jobUrl],
+          indices: [job.index],
+          rawTexts: [prepared.rawText],
+          extracteds: [prepared.extracted],
+          forceAllowDuplicate: true,
+        },
+        (event) => {
+          if (event.type === "job_done") {
+            generateOk = true;
+          } else if (event.type === "fatal") {
+            fatal = event.error;
+          }
+          handleJobEvent(event);
+        },
+      );
+
+      if (fatal) throw new Error(fatal);
+      setStatus(
+        generateOk
+          ? `Retry finished · generated anyway`
+          : `Retry finished · job failed`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unexpected error");
+      setStatus(null);
+    } finally {
+      setRetryingIndices((prev) => {
+        const next = { ...prev };
+        delete next[job.index];
+        return next;
+      });
+    }
   }
 
   const hasActiveRetries = Object.keys(retryingIndices).length > 0;
@@ -806,9 +898,27 @@ export default function ResumeForm() {
                   )}
                   {job.error && <p className="job-error">{job.error}</p>}
                   {job.status === "duplicate" && job.duplicateMessage && (
-                    <p className="job-duplicate" role="alert">
-                      {job.duplicateMessage}
-                    </p>
+                    <div className="duplicate-panel">
+                      <p className="job-duplicate" role="alert">
+                        {job.duplicateMessage}
+                      </p>
+                      <div className="retry-row">
+                        <button
+                          type="button"
+                          className="retry-btn primary-ghost"
+                          disabled={
+                            Boolean(retryingIndices[job.index]) || !job.prepared
+                          }
+                          onClick={() => void onGenerateAnyway(job)}
+                          title="Skip the duplicate check and generate a new package"
+                        >
+                          <RetryIcon />
+                          {retryingIndices[job.index]
+                            ? "Generating…"
+                            : "Generate anyway"}
+                        </button>
+                      </div>
+                    </div>
                   )}
 
                   {job.logs.length > 0 && (

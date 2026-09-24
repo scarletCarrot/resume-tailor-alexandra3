@@ -21,7 +21,7 @@ Default model is `deepseek/deepseek-v4-flash` (override with `OPENROUTER_MODEL`)
 
 ### Optional: company duplicate detection (Upstash Redis)
 
-Before generating a package, the app checks whether that **company** (any role) was already tailored in the last 14 days. On a hit, generation is skipped and the UI shows an amber duplicate alert — no override.
+Before generating a package, the app checks whether that **company** (any role) was already tailored in the last 14 days. On a hit, generation is skipped and the UI shows an amber duplicate alert. Use **Generate anyway** to override (reuses the already-prepared JD; no re-scrape).
 
 Create a free Redis database at [Upstash](https://console.upstash.com) (or link Upstash from the Vercel project Storage tab), then set:
 
@@ -43,7 +43,7 @@ Open [http://localhost:3000](http://localhost:3000).
 1. Profile is fixed in code (`src/lib/profile.ts`) for Karina Elizabeth Garcia Lozana
 2. Paste job URLs (one per line)
 3. The app scrapes each posting in parallel, extracts the JD, and writes a tailored resume + cover letter
-4. Same company within 14 days → skip generate + alert (role/title does not matter)
+4. Same company within 14 days → skip generate + alert (role/title does not matter). Use **Generate anyway** on a duplicate to override.
 
 ## Output
 

@@ -96,19 +96,37 @@ export async function generateOneJob(options: {
   extracted: ExtractedJD;
   onStep: (step: JobStep, message: string) => void;
   onLog?: (message: string, level?: JobLogLevel) => void;
+  /** When true, skip the company duplicate check (UI "Generate anyway"). */
+  forceAllowDuplicate?: boolean;
 }): Promise<GenerateOutcome> {
-  const { index, jobUrl, profile, personal, rawText, extracted, onStep, onLog } =
-    options;
+  const {
+    index,
+    jobUrl,
+    profile,
+    personal,
+    rawText,
+    extracted,
+    onStep,
+    onLog,
+    forceAllowDuplicate = false,
+  } = options;
 
-  const duplicate = await checkDuplicateCompany(extracted.company);
-  if (duplicate) {
-    const message = `A resume was already tailored for ${extracted.company} within the last 14 days. Generation skipped.`;
-    onLog?.(message, "warn");
-    return {
-      kind: "duplicate",
-      company: extracted.company,
-      message,
-    };
+  if (!forceAllowDuplicate) {
+    const duplicate = await checkDuplicateCompany(extracted.company);
+    if (duplicate) {
+      const message = `A resume was already tailored for ${extracted.company} within the last 14 days. Generation skipped.`;
+      onLog?.(message, "warn");
+      return {
+        kind: "duplicate",
+        company: extracted.company,
+        message,
+      };
+    }
+  } else {
+    onLog?.(
+      `Duplicate check skipped (generate anyway) for ${extracted.company}.`,
+      "warn",
+    );
   }
 
   onStep("generating", "Generating resume & cover letter…");
@@ -166,7 +184,9 @@ export async function generateOneJob(options: {
     tailored: fixed,
   });
 
-  await recordCompany(extracted.company);
+  await recordCompany(extracted.company, {
+    refresh: forceAllowDuplicate,
+  });
 
   return {
     kind: "generated",

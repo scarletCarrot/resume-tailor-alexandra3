@@ -111,11 +111,15 @@ export async function checkDuplicateCompany(
 }
 
 /**
- * Record a successful tailor for this company (SET NX + EX).
- * Only call after a package is successfully generated.
- * Fails open on errors.
+ * Record a successful tailor for this company.
+ * - First success: SET NX + EX (atomic insert-if-absent).
+ * - Force / re-generate: overwrite + refresh the 14-day TTL.
+ * Only call after a package is successfully generated. Fails open on errors.
  */
-export async function recordCompany(company: string): Promise<void> {
+export async function recordCompany(
+  company: string,
+  options?: { refresh?: boolean },
+): Promise<void> {
   const normalized = normalizeCompanyKey(company);
   if (!normalized) return;
 
@@ -123,10 +127,15 @@ export async function recordCompany(company: string): Promise<void> {
   if (!client) return;
 
   try {
-    await client.set(redisKey(normalized), new Date().toISOString(), {
-      nx: true,
-      ex: TTL_SECONDS,
-    });
+    const value = new Date().toISOString();
+    if (options?.refresh) {
+      await client.set(redisKey(normalized), value, { ex: TTL_SECONDS });
+    } else {
+      await client.set(redisKey(normalized), value, {
+        nx: true,
+        ex: TTL_SECONDS,
+      });
+    }
   } catch (err) {
     console.warn("[company-dedupe] record failed (failing open):", err);
   }
