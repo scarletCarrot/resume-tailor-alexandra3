@@ -4,7 +4,7 @@ export const CANDIDATE_PROFILE: CandidateProfile = {
   personal: {
     name: "Alexandra Croitoru",
     phone: "+40 373 806 070",
-    linkedin: "https://www.linkedin.com/in/alexandra-croitoru-304a0a419/",
+    linkedin: "https://www.linkedin.com/in/alexandra-croitoru-14982b41a/",
     email: "alexandracroitoru1991@gmail.com",
     location: "Bucharest, Romania",
   },
